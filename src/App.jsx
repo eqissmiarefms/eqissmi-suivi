@@ -10,6 +10,7 @@ import {
   ResponsiveContainer, PieChart, Pie, Cell,
 } from "recharts";
 import { api } from "./api";
+import logoAref from "./assets/logo-aref.png";
 
 /* ---------- Palette (inspiration zellige : teal profond, terre cuite, sable) ---------- */
 const C = {
@@ -380,7 +381,7 @@ export default function EQissmiSuivi() {
       <div style={{ padding: "26px 28px 0" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-            <Logo />
+            <img src={logoAref} alt="AREF Marrakech-Safi" style={{ height: 46 }} />
             <div>
               <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: "0.08em", color: C.clay, textTransform: "uppercase" }}>
                 e-Qissmi · AREF Marrakech-Safi
