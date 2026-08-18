@@ -381,7 +381,11 @@ export default function EQissmiSuivi() {
       <div style={{ padding: "26px 28px 0" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+<<<<<<< HEAD
             <img src={logoAref} alt="AREF Marrakech-Safi" style={{ height: 46 }} />
+=======
+            <img src={logoAref} alt="AREF Marrakech-Safi" style={{ height: 100 }} />
+>>>>>>> 17dc0b1a6186b9dc5628af735b79d32134685ef6
             <div>
               <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: "0.08em", color: C.clay, textTransform: "uppercase" }}>
                 e-Qissmi · AREF Marrakech-Safi
