@@ -79,7 +79,7 @@ function Logo() {
 const norm = (s) => (s || "").toString().trim();
 const normKey = (s) => norm(s).toLowerCase();
 
-export default function EQissmiSuivi() {
+export default function EQissmiSuivi({ user, onLogout }) {
   const [sessions, setSessions] = useState([]);
   const [modules, setModules] = useState([]);
   const [entries, setEntries] = useState([]);
@@ -432,6 +432,15 @@ export default function EQissmiSuivi() {
             <button className="eq-btn eq-btn-ghost" style={{ padding: "4px 8px" }} onClick={() => refresh()} title="Actualiser maintenant">
               Actualiser
             </button>
+            {user && (
+              <>
+                <span style={{ color: C.line }}>|</span>
+                <span>{user.email}</span>
+                <button className="eq-btn eq-btn-ghost" style={{ padding: "4px 8px" }} onClick={onLogout}>
+                  Déconnexion
+                </button>
+              </>
+            )}
           </div>
         </div>
         <div style={{ margin: "16px 0 0" }}><ZellijDivider /></div>
