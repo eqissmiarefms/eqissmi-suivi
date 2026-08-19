@@ -191,6 +191,35 @@ export default function EQissmiSuivi() {
     }
   };
 
+  /* ---------- Marquer "satisfait" pour des bénéficiaires déjà saisis, via une liste d'usernames ---------- */
+  const markSatisfiedByUsernames = async (usernamesText) => {
+    const wanted = usernamesText
+      .split("\n")
+      .map((u) => u.trim().toLowerCase())
+      .filter(Boolean);
+    const wantedSet = new Set(wanted);
+    if (wantedSet.size === 0) return { updated: 0, alreadySatisfied: 0, notFound: [] };
+
+    const matches = entries.filter((e) => e.username && wantedSet.has(e.username.trim().toLowerCase()));
+    const toUpdate = matches.filter((e) => !e.satisfied);
+    const alreadySatisfied = matches.length - toUpdate.length;
+    const foundUsernames = new Set(matches.map((e) => e.username.trim().toLowerCase()));
+    const notFound = wanted.filter((u) => !foundUsernames.has(u));
+
+    if (toUpdate.length > 0) {
+      const idsToUpdate = new Set(toUpdate.map((e) => e.id));
+      setEntries((prev) => prev.map((e) => (idsToUpdate.has(e.id) ? { ...e, satisfied: true } : e))); // optimiste
+      try {
+        await Promise.all(toUpdate.map((e) => api.updateEntry(e.id, { satisfied: true })));
+      } catch (err) {
+        setSyncState("error");
+      }
+      await refresh({ silent: true });
+    }
+
+    return { updated: toUpdate.length, alreadySatisfied, notFound };
+  };
+
   /* ---------- Agrégation pour le tableau de bord ---------- */
   const stats = useMemo(() => {
     const bySession = {};
@@ -270,6 +299,7 @@ export default function EQissmiSuivi() {
           moduleName: norm(keys["module"]),
           tutor: norm(keys["tuteur"]),
           beneficiary: norm(keys["beneficiaire"] || keys["bénéficiaire"]),
+          username: norm(keys["username"] || keys["nom d'utilisateur"]),
           satisfied: ["oui", "satisfait", "1", "true", "vrai"].includes(statutRaw),
         };
       });
@@ -285,11 +315,11 @@ export default function EQissmiSuivi() {
   /* ---------- Export : modèle vide ---------- */
   const exportTemplate = () => {
     const data = [
-      { Session: "Session 1 - 2026", Module: "Module 1 - Pédagogie numérique", Tuteur: "Nom du tuteur", "Bénéficiaire": "Nom du bénéficiaire", Statut: "Oui" },
-      { Session: "Session 1 - 2026", Module: "Module 1 - Pédagogie numérique", Tuteur: "Nom du tuteur", "Bénéficiaire": "Autre bénéficiaire", Statut: "Non" },
+      { Session: "Session 1 - 2026", Module: "Module 1 - Pédagogie numérique", Tuteur: "Nom du tuteur", "Bénéficiaire": "Nom du bénéficiaire", Username: "nom.utilisateur", Statut: "Oui" },
+      { Session: "Session 1 - 2026", Module: "Module 1 - Pédagogie numérique", Tuteur: "Nom du tuteur", "Bénéficiaire": "Autre bénéficiaire", Username: "autre.utilisateur", Statut: "Non" },
     ];
     const ws = XLSX.utils.json_to_sheet(data);
-    ws["!cols"] = [{ wch: 22 }, { wch: 28 }, { wch: 20 }, { wch: 24 }, { wch: 10 }];
+    ws["!cols"] = [{ wch: 22 }, { wch: 28 }, { wch: 20 }, { wch: 24 }, { wch: 18 }, { wch: 10 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Modèle");
     XLSX.writeFile(wb, "modele_import_eQissmi.xlsx");
@@ -302,10 +332,11 @@ export default function EQissmiSuivi() {
       Module: modules.find((m) => m.id === e.moduleId)?.name || "",
       Tuteur: e.tutor,
       "Bénéficiaire": e.beneficiary,
+      Username: e.username || "",
       Statut: e.satisfied ? "Oui" : "Non",
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
-    ws["!cols"] = [{ wch: 22 }, { wch: 28 }, { wch: 20 }, { wch: 24 }, { wch: 10 }];
+    ws["!cols"] = [{ wch: 22 }, { wch: 28 }, { wch: 20 }, { wch: 24 }, { wch: 18 }, { wch: 10 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Données");
     XLSX.writeFile(wb, "eQissmi_donnees.xlsx");
@@ -381,11 +412,7 @@ export default function EQissmiSuivi() {
       <div style={{ padding: "26px 28px 0" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-<<<<<<< HEAD
-            <img src={logoAref} alt="AREF Marrakech-Safi" style={{ height: 46 }} />
-=======
             <img src={logoAref} alt="AREF Marrakech-Safi" style={{ height: 100 }} />
->>>>>>> 17dc0b1a6186b9dc5628af735b79d32134685ef6
             <div>
               <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: "0.08em", color: C.clay, textTransform: "uppercase" }}>
                 e-Qissmi · AREF Marrakech-Safi
@@ -428,7 +455,7 @@ export default function EQissmiSuivi() {
 
       <div style={{ padding: 22 }}>
         {tab === "config" && <ConfigTab sessions={sessions} modules={modules} addSession={addSession} addModule={addModule} deleteSession={deleteSession} deleteModule={deleteModule} />}
-        {tab === "saisie" && <SaisieTab sessions={sessions} modules={modules} entries={entries} addEntry={addEntry} deleteEntry={deleteEntry} toggleSatisfied={toggleSatisfied} />}
+        {tab === "saisie" && <SaisieTab sessions={sessions} modules={modules} entries={entries} addEntry={addEntry} deleteEntry={deleteEntry} toggleSatisfied={toggleSatisfied} markSatisfiedByUsernames={markSatisfiedByUsernames} />}
         {tab === "import" && (
           <ImportTab
             fileInputRef={fileInputRef}
@@ -488,20 +515,44 @@ function ConfigTab({ sessions, modules, addSession, addModule, deleteSession, de
 }
 
 /* ============================================================= SAISIE ============================================================= */
-function SaisieTab({ sessions, modules, entries, addEntry, deleteEntry, toggleSatisfied }) {
+function SaisieTab({ sessions, modules, entries, addEntry, deleteEntry, toggleSatisfied, markSatisfiedByUsernames }) {
   const [sessionId, setSessionId] = useState("");
   const [moduleId, setModuleId] = useState("");
   const [tutor, setTutor] = useState("");
   const [beneficiariesText, setBeneficiariesText] = useState("");
-  const [satisfiedDefault, setSatisfiedDefault] = useState(false);
+  const [satisfiedUsernamesText, setSatisfiedUsernamesText] = useState("");
   const [filterSession, setFilterSession] = useState("");
   const [filterModule, setFilterModule] = useState("");
 
+  const [updateUsernamesText, setUpdateUsernamesText] = useState("");
+  const [updateReport, setUpdateReport] = useState(null);
+  const [updating, setUpdating] = useState(false);
+
+  const submitUpdate = async () => {
+    if (!updateUsernamesText.trim()) return;
+    setUpdating(true);
+    const report = await markSatisfiedByUsernames(updateUsernamesText);
+    setUpdateReport(report);
+    setUpdating(false);
+    setUpdateUsernamesText("");
+  };
+
   const submit = () => {
     if (!sessionId || !moduleId || !tutor.trim() || !beneficiariesText.trim()) return;
-    const names = beneficiariesText.split("\n").map((n) => n.trim()).filter(Boolean);
-    names.forEach((name) => addEntry({ sessionId, moduleId, tutor: tutor.trim(), beneficiary: name, satisfied: satisfiedDefault }));
+    const satisfiedUsernames = new Set(
+      satisfiedUsernamesText.split("\n").map((u) => u.trim().toLowerCase()).filter(Boolean)
+    );
+    const lines = beneficiariesText.split("\n").map((l) => l.trim()).filter(Boolean);
+    lines.forEach((line) => {
+      const [namePart, usernamePart] = line.split(";");
+      const name = (namePart || "").trim();
+      const username = (usernamePart || "").trim();
+      if (!name) return;
+      const satisfied = username ? satisfiedUsernames.has(username.toLowerCase()) : false;
+      addEntry({ sessionId, moduleId, tutor: tutor.trim(), beneficiary: name, username, satisfied });
+    });
     setBeneficiariesText("");
+    setSatisfiedUsernamesText("");
   };
 
   const filtered = entries.filter(
@@ -510,6 +561,7 @@ function SaisieTab({ sessions, modules, entries, addEntry, deleteEntry, toggleSa
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: 18 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <div className="eq-card">
         <h3 style={{ margin: "0 0 4px", fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 16 }}>Ajout rapide</h3>
         <p style={{ margin: "0 0 14px", fontSize: 12.5, color: C.inkSoft }}>
@@ -525,11 +577,22 @@ function SaisieTab({ sessions, modules, entries, addEntry, deleteEntry, toggleSa
             {modules.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           </select>
           <input className="eq-input" placeholder="Nom du tuteur" value={tutor} onChange={(e) => setTutor(e.target.value)} />
-          <textarea className="eq-input" rows={6} placeholder={"Bénéficiaires, un par ligne :\nAhmed El Fassi\nSalma Idrissi\n…"} value={beneficiariesText} onChange={(e) => setBeneficiariesText(e.target.value)} />
-          <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, color: C.inkSoft }}>
-            <input type="checkbox" checked={satisfiedDefault} onChange={(e) => setSatisfiedDefault(e.target.checked)} />
-            Marquer ces bénéficiaires comme ayant satisfait le module
-          </label>
+          <textarea className="eq-input" rows={6} placeholder={"Bénéficiaires, un par ligne :\nAhmed El Fassi;ahmed.elfassi\nSalma Idrissi;salma.idrissi\n(le username après le \";\" est optionnel)"} value={beneficiariesText} onChange={(e) => setBeneficiariesText(e.target.value)} />
+          <div>
+            <label style={{ display: "block", fontSize: 12.5, color: C.inkSoft, marginBottom: 6 }}>
+              Usernames des bénéficiaires ayant satisfait le module (un par ligne)
+            </label>
+            <textarea
+              className="eq-input"
+              rows={4}
+              placeholder={"ahmed.elfassi\nsalma.idrissi"}
+              value={satisfiedUsernamesText}
+              onChange={(e) => setSatisfiedUsernamesText(e.target.value)}
+            />
+            <div style={{ fontSize: 11.5, color: C.inkSoft, marginTop: 4 }}>
+              Seuls les bénéficiaires dont le username figure ici seront marqués comme ayant satisfait.
+            </div>
+          </div>
           <button className="eq-btn eq-btn-primary" onClick={submit} style={{ justifyContent: "center" }}>
             <Plus size={14} /> Ajouter au suivi
           </button>
@@ -540,6 +603,43 @@ function SaisieTab({ sessions, modules, entries, addEntry, deleteEntry, toggleSa
             Créez d'abord au moins une session et un module dans l'onglet Configuration.
           </div>
         )}
+      </div>
+
+      <div className="eq-card">
+        <h3 style={{ margin: "0 0 4px", fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 16 }}>
+          Mettre à jour un statut existant
+        </h3>
+        <p style={{ margin: "0 0 14px", fontSize: 12.5, color: C.inkSoft }}>
+          Pour des bénéficiaires déjà saisis : collez ici les usernames de ceux qui viennent de satisfaire le module.
+          Les autres restent inchangés.
+        </p>
+        <textarea
+          className="eq-input"
+          rows={6}
+          placeholder={"ahmed.elfassi\nsalma.idrissi\n…"}
+          value={updateUsernamesText}
+          onChange={(e) => setUpdateUsernamesText(e.target.value)}
+        />
+        <button
+          className="eq-btn eq-btn-primary"
+          onClick={submitUpdate}
+          disabled={updating}
+          style={{ justifyContent: "center", width: "100%", marginTop: 10 }}
+        >
+          <CheckCircle2 size={14} /> {updating ? "Mise à jour…" : "Marquer comme satisfait"}
+        </button>
+        {updateReport && (
+          <div style={{ marginTop: 12, fontSize: 12.5, background: C.goodBg, color: C.good, borderRadius: 8, padding: 10 }}>
+            {updateReport.updated} bénéficiaire(s) mis à jour
+            {updateReport.alreadySatisfied > 0 && `, ${updateReport.alreadySatisfied} déjà marqué(s) satisfait`}
+            {updateReport.notFound.length > 0 && (
+              <div style={{ marginTop: 6, color: C.bad }}>
+                Username(s) introuvable(s) : {updateReport.notFound.join(", ")}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
       </div>
 
       <div className="eq-card">
@@ -562,7 +662,7 @@ function SaisieTab({ sessions, modules, entries, addEntry, deleteEntry, toggleSa
           <table className="eq-table">
             <thead>
               <tr>
-                <th>Session</th><th>Module</th><th>Tuteur</th><th>Bénéficiaire</th><th>Satisfait</th><th></th>
+                <th>Session</th><th>Module</th><th>Tuteur</th><th>Bénéficiaire</th><th>Username</th><th>Satisfait</th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -572,12 +672,13 @@ function SaisieTab({ sessions, modules, entries, addEntry, deleteEntry, toggleSa
                   <td>{modules.find((m) => m.id === e.moduleId)?.name || "—"}</td>
                   <td>{e.tutor}</td>
                   <td>{e.beneficiary}</td>
+                  <td>{e.username || "—"}</td>
                   <td><input type="checkbox" checked={!!e.satisfied} onChange={() => toggleSatisfied(e.id)} /></td>
                   <td><button className="eq-btn eq-btn-ghost" onClick={() => deleteEntry(e.id)}><Trash2 size={13} /></button></td>
                 </tr>
               ))}
               {filtered.length === 0 && (
-                <tr><td colSpan={6} style={{ color: C.inkSoft, textAlign: "center", padding: 20 }}>Aucune donnée pour ce filtre.</td></tr>
+                <tr><td colSpan={7} style={{ color: C.inkSoft, textAlign: "center", padding: 20 }}>Aucune donnée pour ce filtre.</td></tr>
               )}
             </tbody>
           </table>
@@ -595,7 +696,7 @@ function ImportTab({ fileInputRef, handleFile, importReport, exportTemplate, exp
       <div className="eq-card">
         <h3 style={{ margin: "0 0 4px", fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 16 }}>Importer un fichier Excel</h3>
         <p style={{ margin: "0 0 14px", fontSize: 12.5, color: C.inkSoft }}>
-          Colonnes attendues : <b>Session, Module, Tuteur, Bénéficiaire, Statut</b> (Statut = "Oui" / "Non").
+          Colonnes attendues : <b>Session, Module, Tuteur, Bénéficiaire, Username, Statut</b> (Statut = "Oui" / "Non", Username optionnel).
           Les sessions et modules absents sont créés automatiquement.
         </p>
         <div
