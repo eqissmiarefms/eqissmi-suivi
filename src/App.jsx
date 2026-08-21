@@ -861,24 +861,30 @@ function DashboardTab({ stats, entries }) {
   const activeSessions = stats.filter((s) => s.modules.length > 0);
   const hasData = activeSessions.length > 0;
 
-  const provinceStats = useMemo(() => {
-    const buckets = {};
-    (entries || []).forEach((e) => {
-      const key = e.province && e.province.trim() ? e.province.trim() : "Non renseigné";
-      buckets[key] = buckets[key] || { total: 0, satisfied: 0 };
-      buckets[key].total += 1;
-      if (e.satisfied) buckets[key].satisfied += 1;
-    });
+  const provinceStatsBySession = useMemo(() => {
     const order = [...DIRECTIONS, "Non renseigné"];
-    return order
-      .filter((name) => buckets[name])
-      .map((name) => ({
-        name,
-        Bénéficiaires: buckets[name].total,
-        "Ont satisfait": buckets[name].satisfied,
-        pct: buckets[name].total > 0 ? Math.round((buckets[name].satisfied / buckets[name].total) * 1000) / 10 : null,
-      }));
-  }, [entries]);
+    const result = {};
+    activeSessions.forEach((s) => {
+      const buckets = {};
+      (entries || [])
+        .filter((e) => e.sessionId === s.id)
+        .forEach((e) => {
+          const key = e.province && e.province.trim() ? e.province.trim() : "Non renseigné";
+          buckets[key] = buckets[key] || { total: 0, satisfied: 0 };
+          buckets[key].total += 1;
+          if (e.satisfied) buckets[key].satisfied += 1;
+        });
+      result[s.id] = order
+        .filter((name) => buckets[name])
+        .map((name) => ({
+          name,
+          Bénéficiaires: buckets[name].total,
+          "Ont satisfait": buckets[name].satisfied,
+          pct: buckets[name].total > 0 ? Math.round((buckets[name].satisfied / buckets[name].total) * 1000) / 10 : null,
+        }));
+    });
+    return result;
+  }, [entries, stats]);
 
   if (!hasData) {
     return (
@@ -902,50 +908,59 @@ function DashboardTab({ stats, entries }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <div className="eq-card">
-        <h3 style={{ margin: "0 0 4px", fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 16 }}>
-          Par direction provinciale
-        </h3>
-        <p style={{ margin: "0 0 10px", fontSize: 12.5, color: C.inkSoft }}>Bénéficiaires vs. bénéficiaires ayant satisfait, toutes sessions et modules confondus</p>
-        <ResponsiveContainer width="100%" height={240}>
-          <BarChart data={provinceStats} margin={{ top: 4, right: 12, left: -12, bottom: 24 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke={C.line} vertical={false} />
-            <XAxis dataKey="name" tick={{ fontSize: 11, fill: C.inkSoft }} interval={0} angle={-20} textAnchor="end" height={50} />
-            <YAxis tick={{ fontSize: 11.5, fill: C.inkSoft }} allowDecimals={false} />
-            <Tooltip contentStyle={{ fontSize: 12.5, borderRadius: 8, border: `1px solid ${C.line}` }} />
-            <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Bar dataKey="Bénéficiaires" fill={C.gold} radius={[4, 4, 0, 0]} />
-            <Bar dataKey="Ont satisfait" fill={C.teal} radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-        <table className="eq-table" style={{ marginTop: 14 }}>
-          <thead>
-            <tr>
-              <th>Direction</th>
-              <th>Bénéficiaires</th>
-              <th>Ont satisfait</th>
-              <th>% satisfaction</th>
-            </tr>
-          </thead>
-          <tbody>
-            {provinceStats.map((p) => {
-              const col = pctColor(p.pct);
-              return (
-                <tr key={p.name}>
-                  <td style={{ fontWeight: 600 }}>{p.name}</td>
-                  <td>{p.Bénéficiaires}</td>
-                  <td>{p["Ont satisfait"]}</td>
-                  <td>
-                    <span style={{ background: col.bg, color: col.fg, padding: "3px 9px", borderRadius: 999, fontWeight: 700, fontSize: 12 }}>
-                      {p.pct === null ? "—" : `${p.pct}%`}
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <div style={{ fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 17, margin: "4px 0 -6px" }}>
+        Par direction provinciale
       </div>
+      {activeSessions.map((s) => {
+        const data = provinceStatsBySession[s.id] || [];
+        if (data.length === 0) return null;
+        return (
+          <div key={"province-" + s.id} className="eq-card">
+            <h3 style={{ margin: "0 0 4px", fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 16 }}>
+              {s.name}
+            </h3>
+            <p style={{ margin: "0 0 10px", fontSize: 12.5, color: C.inkSoft }}>Bénéficiaires vs. bénéficiaires ayant satisfait, par direction provinciale</p>
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={data} margin={{ top: 4, right: 12, left: -12, bottom: 24 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.line} vertical={false} />
+                <XAxis dataKey="name" tick={{ fontSize: 11, fill: C.inkSoft }} interval={0} angle={-20} textAnchor="end" height={50} />
+                <YAxis tick={{ fontSize: 11.5, fill: C.inkSoft }} allowDecimals={false} />
+                <Tooltip contentStyle={{ fontSize: 12.5, borderRadius: 8, border: `1px solid ${C.line}` }} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar dataKey="Bénéficiaires" fill={C.gold} radius={[4, 4, 0, 0]} />
+                <Bar dataKey="Ont satisfait" fill={C.teal} radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+            <table className="eq-table" style={{ marginTop: 14 }}>
+              <thead>
+                <tr>
+                  <th>Direction</th>
+                  <th>Bénéficiaires</th>
+                  <th>Ont satisfait</th>
+                  <th>% satisfaction</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.map((p) => {
+                  const col = pctColor(p.pct);
+                  return (
+                    <tr key={p.name}>
+                      <td style={{ fontWeight: 600 }}>{p.name}</td>
+                      <td>{p.Bénéficiaires}</td>
+                      <td>{p["Ont satisfait"]}</td>
+                      <td>
+                        <span style={{ background: col.bg, color: col.fg, padding: "3px 9px", borderRadius: 999, fontWeight: 700, fontSize: 12 }}>
+                          {p.pct === null ? "—" : `${p.pct}%`}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        );
+      })}
 
       {activeSessions.length > 1 && (
         <div className="eq-card">
