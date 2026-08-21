@@ -191,6 +191,17 @@ export default function EQissmiSuivi({ user, onLogout }) {
     }
   };
 
+  const updateEntryProvince = async (id, province) => {
+    setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, province } : e))); // optimiste
+    try {
+      await api.updateEntry(id, { province });
+      await refresh({ silent: true });
+    } catch (e) {
+      setSyncState("error");
+      await refresh({ silent: true });
+    }
+  };
+
   /* ---------- Marquer "satisfait" pour des bénéficiaires déjà saisis, via une liste d'usernames ---------- */
   const markSatisfiedByUsernames = async (usernamesText) => {
     const wanted = usernamesText
@@ -300,6 +311,7 @@ export default function EQissmiSuivi({ user, onLogout }) {
           tutor: norm(keys["tuteur"]),
           beneficiary: norm(keys["beneficiaire"] || keys["bénéficiaire"]),
           username: norm(keys["username"] || keys["nom d'utilisateur"]),
+          province: norm(keys["direction"] || keys["direction provinciale"] || keys["province"]),
           satisfied: ["oui", "satisfait", "1", "true", "vrai"].includes(statutRaw),
         };
       });
@@ -315,11 +327,11 @@ export default function EQissmiSuivi({ user, onLogout }) {
   /* ---------- Export : modèle vide ---------- */
   const exportTemplate = () => {
     const data = [
-      { Session: "Session 1 - 2026", Module: "Module 1 - Pédagogie numérique", Tuteur: "Nom du tuteur", "Bénéficiaire": "Nom du bénéficiaire", Username: "nom.utilisateur", Statut: "Oui" },
-      { Session: "Session 1 - 2026", Module: "Module 1 - Pédagogie numérique", Tuteur: "Nom du tuteur", "Bénéficiaire": "Autre bénéficiaire", Username: "autre.utilisateur", Statut: "Non" },
+      { Session: "Session 1 - 2026", Module: "Module 1 - Pédagogie numérique", Tuteur: "Nom du tuteur", "Bénéficiaire": "Nom du bénéficiaire", Username: "nom.utilisateur", "Direction provinciale": "Marrakech", Statut: "Oui" },
+      { Session: "Session 1 - 2026", Module: "Module 1 - Pédagogie numérique", Tuteur: "Nom du tuteur", "Bénéficiaire": "Autre bénéficiaire", Username: "autre.utilisateur", "Direction provinciale": "Safi", Statut: "Non" },
     ];
     const ws = XLSX.utils.json_to_sheet(data);
-    ws["!cols"] = [{ wch: 22 }, { wch: 28 }, { wch: 20 }, { wch: 24 }, { wch: 18 }, { wch: 10 }];
+    ws["!cols"] = [{ wch: 22 }, { wch: 28 }, { wch: 20 }, { wch: 24 }, { wch: 18 }, { wch: 18 }, { wch: 10 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Modèle");
     XLSX.writeFile(wb, "modele_import_eQissmi.xlsx");
@@ -333,10 +345,11 @@ export default function EQissmiSuivi({ user, onLogout }) {
       Tuteur: e.tutor,
       "Bénéficiaire": e.beneficiary,
       Username: e.username || "",
+      "Direction provinciale": e.province || "",
       Statut: e.satisfied ? "Oui" : "Non",
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
-    ws["!cols"] = [{ wch: 22 }, { wch: 28 }, { wch: 20 }, { wch: 24 }, { wch: 18 }, { wch: 10 }];
+    ws["!cols"] = [{ wch: 22 }, { wch: 28 }, { wch: 20 }, { wch: 24 }, { wch: 18 }, { wch: 18 }, { wch: 10 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Données");
     XLSX.writeFile(wb, "eQissmi_donnees.xlsx");
@@ -464,7 +477,7 @@ export default function EQissmiSuivi({ user, onLogout }) {
 
       <div style={{ padding: 22 }}>
         {tab === "config" && <ConfigTab sessions={sessions} modules={modules} addSession={addSession} addModule={addModule} deleteSession={deleteSession} deleteModule={deleteModule} />}
-        {tab === "saisie" && <SaisieTab sessions={sessions} modules={modules} entries={entries} addEntry={addEntry} deleteEntry={deleteEntry} toggleSatisfied={toggleSatisfied} markSatisfiedByUsernames={markSatisfiedByUsernames} />}
+        {tab === "saisie" && <SaisieTab sessions={sessions} modules={modules} entries={entries} addEntry={addEntry} deleteEntry={deleteEntry} toggleSatisfied={toggleSatisfied} updateEntryProvince={updateEntryProvince} markSatisfiedByUsernames={markSatisfiedByUsernames} />}
         {tab === "import" && (
           <ImportTab
             fileInputRef={fileInputRef}
@@ -476,7 +489,7 @@ export default function EQissmiSuivi({ user, onLogout }) {
             entriesCount={entries.length}
           />
         )}
-        {tab === "dashboard" && <DashboardTab stats={stats} />}
+        {tab === "dashboard" && <DashboardTab stats={stats} entries={entries} />}
       </div>
     </div>
   );
@@ -524,14 +537,22 @@ function ConfigTab({ sessions, modules, addSession, addModule, deleteSession, de
 }
 
 /* ============================================================= SAISIE ============================================================= */
-function SaisieTab({ sessions, modules, entries, addEntry, deleteEntry, toggleSatisfied, markSatisfiedByUsernames }) {
+const DIRECTIONS = ["Marrakech", "Safi", "Rhamna", "Chichaoua", "Kalaa des Sraghna", "Youssoufia", "Haouz", "Essaouira"];
+
+function emptyRow() {
+  return { key: Math.random().toString(36).slice(2), name: "", username: "", province: "" };
+}
+
+function SaisieTab({ sessions, modules, entries, addEntry, deleteEntry, toggleSatisfied, updateEntryProvince, markSatisfiedByUsernames }) {
   const [sessionId, setSessionId] = useState("");
   const [moduleId, setModuleId] = useState("");
   const [tutor, setTutor] = useState("");
-  const [beneficiariesText, setBeneficiariesText] = useState("");
+  const [rows, setRows] = useState([emptyRow()]);
   const [satisfiedUsernamesText, setSatisfiedUsernamesText] = useState("");
   const [filterSession, setFilterSession] = useState("");
   const [filterModule, setFilterModule] = useState("");
+  const [filterDirection, setFilterDirection] = useState("");
+  const [searchText, setSearchText] = useState("");
 
   const [updateUsernamesText, setUpdateUsernamesText] = useState("");
   const [updateReport, setUpdateReport] = useState(null);
@@ -546,35 +567,49 @@ function SaisieTab({ sessions, modules, entries, addEntry, deleteEntry, toggleSa
     setUpdateUsernamesText("");
   };
 
+  const updateRow = (key, field, value) => {
+    setRows((prev) => prev.map((r) => (r.key === key ? { ...r, [field]: value } : r)));
+  };
+  const addRow = () => setRows((prev) => [...prev, emptyRow()]);
+  const removeRow = (key) => setRows((prev) => (prev.length > 1 ? prev.filter((r) => r.key !== key) : prev));
+
   const submit = () => {
-    if (!sessionId || !moduleId || !tutor.trim() || !beneficiariesText.trim()) return;
+    const validRows = rows.filter((r) => r.name.trim());
+    if (!sessionId || !moduleId || !tutor.trim() || validRows.length === 0) return;
     const satisfiedUsernames = new Set(
       satisfiedUsernamesText.split("\n").map((u) => u.trim().toLowerCase()).filter(Boolean)
     );
-    const lines = beneficiariesText.split("\n").map((l) => l.trim()).filter(Boolean);
-    lines.forEach((line) => {
-      const [namePart, usernamePart] = line.split(";");
-      const name = (namePart || "").trim();
-      const username = (usernamePart || "").trim();
-      if (!name) return;
+    validRows.forEach((r) => {
+      const name = r.name.trim();
+      const username = r.username.trim();
       const satisfied = username ? satisfiedUsernames.has(username.toLowerCase()) : false;
-      addEntry({ sessionId, moduleId, tutor: tutor.trim(), beneficiary: name, username, satisfied });
+      addEntry({ sessionId, moduleId, tutor: tutor.trim(), beneficiary: name, username, province: r.province, satisfied });
     });
-    setBeneficiariesText("");
+    setRows([emptyRow()]);
     setSatisfiedUsernamesText("");
   };
 
-  const filtered = entries.filter(
-    (e) => (!filterSession || e.sessionId === filterSession) && (!filterModule || e.moduleId === filterModule)
-  );
+  const filtered = entries.filter((e) => {
+    const search = searchText.trim().toLowerCase();
+    const matchesSearch =
+      !search ||
+      (e.beneficiary || "").toLowerCase().includes(search) ||
+      (e.username || "").toLowerCase().includes(search);
+    return (
+      (!filterSession || e.sessionId === filterSession) &&
+      (!filterModule || e.moduleId === filterModule) &&
+      (!filterDirection || e.province === filterDirection) &&
+      matchesSearch
+    );
+  });
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: 18 }}>
+    <div style={{ display: "grid", gridTemplateColumns: "440px 1fr", gap: 18 }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <div className="eq-card">
         <h3 style={{ margin: "0 0 4px", fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 16 }}>Ajout rapide</h3>
         <p style={{ margin: "0 0 14px", fontSize: 12.5, color: C.inkSoft }}>
-          Un tuteur, plusieurs bénéficiaires (un nom par ligne)
+          Un tuteur, plusieurs bénéficiaires — direction provinciale par bénéficiaire
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <select className="eq-input" value={sessionId} onChange={(e) => setSessionId(e.target.value)}>
@@ -586,7 +621,39 @@ function SaisieTab({ sessions, modules, entries, addEntry, deleteEntry, toggleSa
             {modules.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           </select>
           <input className="eq-input" placeholder="Nom du tuteur" value={tutor} onChange={(e) => setTutor(e.target.value)} />
-          <textarea className="eq-input" rows={6} placeholder={"Bénéficiaires, un par ligne :\nAhmed El Fassi;ahmed.elfassi\nSalma Idrissi;salma.idrissi\n(le username après le \";\" est optionnel)"} value={beneficiariesText} onChange={(e) => setBeneficiariesText(e.target.value)} />
+
+          <div style={{ fontSize: 12.5, color: C.inkSoft, marginTop: 4 }}>Bénéficiaires</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {rows.map((r) => (
+              <div key={r.key} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 6, alignItems: "center" }}>
+                <input
+                  className="eq-input" placeholder="Nom du bénéficiaire" value={r.name}
+                  onChange={(e) => updateRow(r.key, "name", e.target.value)}
+                />
+                <input
+                  className="eq-input" placeholder="Username" value={r.username}
+                  onChange={(e) => updateRow(r.key, "username", e.target.value)}
+                />
+                <select
+                  className="eq-input" value={r.province}
+                  onChange={(e) => updateRow(r.key, "province", e.target.value)}
+                >
+                  <option value="">Direction…</option>
+                  {DIRECTIONS.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+                <button
+                  className="eq-btn eq-btn-ghost" style={{ padding: "6px" }}
+                  onClick={() => removeRow(r.key)} title="Retirer cette ligne"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <button className="eq-btn eq-btn-secondary" onClick={addRow} style={{ justifyContent: "center" }}>
+            <Plus size={14} /> Ajouter une ligne
+          </button>
+
           <div>
             <label style={{ display: "block", fontSize: 12.5, color: C.inkSoft, marginBottom: 6 }}>
               Usernames des bénéficiaires ayant satisfait le module (un par ligne)
@@ -652,18 +719,29 @@ function SaisieTab({ sessions, modules, entries, addEntry, deleteEntry, toggleSa
       </div>
 
       <div className="eq-card">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
           <h3 style={{ margin: 0, fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 16 }}>
             Bénéficiaires saisis ({filtered.length})
           </h3>
-          <div style={{ display: "flex", gap: 8 }}>
-            <select className="eq-input" style={{ width: 160 }} value={filterSession} onChange={(e) => setFilterSession(e.target.value)}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input
+              className="eq-input"
+              style={{ width: 200 }}
+              placeholder="Rechercher (nom ou username)…"
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+            />
+            <select className="eq-input" style={{ width: 150 }} value={filterSession} onChange={(e) => setFilterSession(e.target.value)}>
               <option value="">Toutes sessions</option>
               {sessions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
-            <select className="eq-input" style={{ width: 180 }} value={filterModule} onChange={(e) => setFilterModule(e.target.value)}>
+            <select className="eq-input" style={{ width: 160 }} value={filterModule} onChange={(e) => setFilterModule(e.target.value)}>
               <option value="">Tous modules</option>
               {modules.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+            <select className="eq-input" style={{ width: 150 }} value={filterDirection} onChange={(e) => setFilterDirection(e.target.value)}>
+              <option value="">Toutes directions</option>
+              {DIRECTIONS.map((d) => <option key={d} value={d}>{d}</option>)}
             </select>
           </div>
         </div>
@@ -671,7 +749,7 @@ function SaisieTab({ sessions, modules, entries, addEntry, deleteEntry, toggleSa
           <table className="eq-table">
             <thead>
               <tr>
-                <th>Session</th><th>Module</th><th>Tuteur</th><th>Bénéficiaire</th><th>Username</th><th>Satisfait</th><th></th>
+                <th>Session</th><th>Module</th><th>Tuteur</th><th>Bénéficiaire</th><th>Direction</th><th>Username</th><th>Satisfait</th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -681,13 +759,24 @@ function SaisieTab({ sessions, modules, entries, addEntry, deleteEntry, toggleSa
                   <td>{modules.find((m) => m.id === e.moduleId)?.name || "—"}</td>
                   <td>{e.tutor}</td>
                   <td>{e.beneficiary}</td>
+                  <td>
+                    <select
+                      className="eq-input"
+                      style={{ padding: "4px 6px", fontSize: 12.5 }}
+                      value={e.province || ""}
+                      onChange={(ev) => updateEntryProvince(e.id, ev.target.value)}
+                    >
+                      <option value="">—</option>
+                      {DIRECTIONS.map((d) => <option key={d} value={d}>{d}</option>)}
+                    </select>
+                  </td>
                   <td>{e.username || "—"}</td>
                   <td><input type="checkbox" checked={!!e.satisfied} onChange={() => toggleSatisfied(e.id)} /></td>
                   <td><button className="eq-btn eq-btn-ghost" onClick={() => deleteEntry(e.id)}><Trash2 size={13} /></button></td>
                 </tr>
               ))}
               {filtered.length === 0 && (
-                <tr><td colSpan={7} style={{ color: C.inkSoft, textAlign: "center", padding: 20 }}>Aucune donnée pour ce filtre.</td></tr>
+                <tr><td colSpan={8} style={{ color: C.inkSoft, textAlign: "center", padding: 20 }}>Aucune donnée pour ce filtre.</td></tr>
               )}
             </tbody>
           </table>
@@ -765,12 +854,32 @@ function pctColor(pct) {
   return { fg: C.bad, bg: C.badBg };
 }
 
-function DashboardTab({ stats }) {
+function DashboardTab({ stats, entries }) {
   const [openModules, setOpenModules] = useState({});
   const toggle = (key) => setOpenModules((p) => ({ ...p, [key]: !p[key] }));
 
   const activeSessions = stats.filter((s) => s.modules.length > 0);
   const hasData = activeSessions.length > 0;
+
+  const provinceStats = useMemo(() => {
+    const buckets = {};
+    (entries || []).forEach((e) => {
+      const key = e.province && e.province.trim() ? e.province.trim() : "Non renseigné";
+      buckets[key] = buckets[key] || { total: 0, satisfied: 0 };
+      buckets[key].total += 1;
+      if (e.satisfied) buckets[key].satisfied += 1;
+    });
+    const order = [...DIRECTIONS, "Non renseigné"];
+    return order
+      .filter((name) => buckets[name])
+      .map((name) => ({
+        name,
+        Bénéficiaires: buckets[name].total,
+        "Ont satisfait": buckets[name].satisfied,
+        pct: buckets[name].total > 0 ? Math.round((buckets[name].satisfied / buckets[name].total) * 1000) / 10 : null,
+      }));
+  }, [entries]);
+
   if (!hasData) {
     return (
       <div className="eq-card" style={{ textAlign: "center", padding: 40, color: C.inkSoft }}>
@@ -793,6 +902,51 @@ function DashboardTab({ stats }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <div className="eq-card">
+        <h3 style={{ margin: "0 0 4px", fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 16 }}>
+          Par direction provinciale
+        </h3>
+        <p style={{ margin: "0 0 10px", fontSize: 12.5, color: C.inkSoft }}>Bénéficiaires vs. bénéficiaires ayant satisfait, toutes sessions et modules confondus</p>
+        <ResponsiveContainer width="100%" height={240}>
+          <BarChart data={provinceStats} margin={{ top: 4, right: 12, left: -12, bottom: 24 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke={C.line} vertical={false} />
+            <XAxis dataKey="name" tick={{ fontSize: 11, fill: C.inkSoft }} interval={0} angle={-20} textAnchor="end" height={50} />
+            <YAxis tick={{ fontSize: 11.5, fill: C.inkSoft }} allowDecimals={false} />
+            <Tooltip contentStyle={{ fontSize: 12.5, borderRadius: 8, border: `1px solid ${C.line}` }} />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Bar dataKey="Bénéficiaires" fill={C.gold} radius={[4, 4, 0, 0]} />
+            <Bar dataKey="Ont satisfait" fill={C.teal} radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+        <table className="eq-table" style={{ marginTop: 14 }}>
+          <thead>
+            <tr>
+              <th>Direction</th>
+              <th>Bénéficiaires</th>
+              <th>Ont satisfait</th>
+              <th>% satisfaction</th>
+            </tr>
+          </thead>
+          <tbody>
+            {provinceStats.map((p) => {
+              const col = pctColor(p.pct);
+              return (
+                <tr key={p.name}>
+                  <td style={{ fontWeight: 600 }}>{p.name}</td>
+                  <td>{p.Bénéficiaires}</td>
+                  <td>{p["Ont satisfait"]}</td>
+                  <td>
+                    <span style={{ background: col.bg, color: col.fg, padding: "3px 9px", borderRadius: 999, fontWeight: 700, fontSize: 12 }}>
+                      {p.pct === null ? "—" : `${p.pct}%`}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
       {activeSessions.length > 1 && (
         <div className="eq-card">
           <h3 style={{ margin: "0 0 4px", fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 16 }}>
