@@ -857,9 +857,11 @@ function pctColor(pct) {
 function DashboardTab({ stats, entries }) {
   const [openModules, setOpenModules] = useState({});
   const toggle = (key) => setOpenModules((p) => ({ ...p, [key]: !p[key] }));
+  const [filterSessionId, setFilterSessionId] = useState("");
 
   const activeSessions = stats.filter((s) => s.modules.length > 0);
   const hasData = activeSessions.length > 0;
+  const visibleSessions = filterSessionId ? activeSessions.filter((s) => s.id === filterSessionId) : activeSessions;
 
   const provinceStatsBySession = useMemo(() => {
     const order = [...DIRECTIONS, "Non renseigné"];
@@ -908,10 +910,18 @@ function DashboardTab({ stats, entries }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <div className="eq-card" style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 18px" }}>
+        <span style={{ fontSize: 12.5, color: C.inkSoft, fontWeight: 600 }}>Filtrer par session</span>
+        <select className="eq-input" style={{ width: 220 }} value={filterSessionId} onChange={(e) => setFilterSessionId(e.target.value)}>
+          <option value="">Toutes les sessions</option>
+          {activeSessions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+      </div>
+
       <div style={{ fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 17, margin: "4px 0 -6px" }}>
         Par direction provinciale
       </div>
-      {activeSessions.map((s) => {
+      {visibleSessions.map((s) => {
         const data = provinceStatsBySession[s.id] || [];
         if (data.length === 0) return null;
         return (
@@ -962,7 +972,7 @@ function DashboardTab({ stats, entries }) {
         );
       })}
 
-      {activeSessions.length > 1 && (
+      {!filterSessionId && activeSessions.length > 1 && (
         <div className="eq-card">
           <h3 style={{ margin: "0 0 4px", fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 16 }}>
             Aperçu global — toutes sessions
@@ -982,7 +992,7 @@ function DashboardTab({ stats, entries }) {
         </div>
       )}
 
-      {activeSessions.map((s) => {
+      {visibleSessions.map((s) => {
         const total = s.modules.reduce((a, m) => a + m.total, 0);
         const satisfied = s.modules.reduce((a, m) => a + m.satisfied, 0);
         const donutData = [
