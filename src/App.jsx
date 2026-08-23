@@ -1445,7 +1445,7 @@ function ReportTab({ sessions, modules, entries }) {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "14px 0 4px" }}>
             <label style={{ fontSize: 12.5, color: C.inkSoft }}>ملخص عام</label>
             <button className="eq-btn eq-btn-secondary" disabled={!stats} onClick={fillDefaultsAr}>
-              <RefreshCw size={13} /> توليد نص تلقائي
+              <RefreshCw size={13} /> استخراج نص تلقائي
             </button>
           </div>
           <textarea className="eq-input" style={{ textAlign: "right", direction: "rtl" }} rows={5} value={summaryAr} onChange={(e) => setSummaryAr(e.target.value)} />
@@ -1454,7 +1454,7 @@ function ReportTab({ sessions, modules, entries }) {
         </div>
 
         <button className="eq-btn eq-btn-primary" disabled={!stats || generatingAr} onClick={handleGenerateAr} style={{ justifyContent: "center", padding: "12px 14px" }}>
-          <FileText size={15} /> {generatingAr ? "جاري الإنشاء…" : "توليد التقرير بالعربية (.docx)"}
+          <FileText size={15} /> {generatingAr ? "جاري الإنشاء…" : "استخراج التقرير بالعربية (.docx)"}
         </button>
 
         {!stats && (
