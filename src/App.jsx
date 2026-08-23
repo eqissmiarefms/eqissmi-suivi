@@ -3,12 +3,14 @@ import * as XLSX from "xlsx";
 import {
   Plus, Trash2, Upload, Download, ChevronDown, ChevronRight,
   Users, CheckCircle2, Layers, FileSpreadsheet, Settings2,
-  ClipboardList, LayoutDashboard, AlertCircle, Loader2
+  ClipboardList, LayoutDashboard, AlertCircle, Loader2, FileText, RefreshCw
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, PieChart, Pie, Cell,
 } from "recharts";
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, AlignmentType } from "docx";
+import { saveAs } from "file-saver";
 import { api } from "./api";
 import logoAref from "./assets/logo-aref.png";
 
@@ -473,6 +475,9 @@ export default function EQissmiSuivi({ user, onLogout }) {
         <div className={`eq-tab ${tab === "dashboard" ? "active" : ""}`} onClick={() => setTab("dashboard")}>
           <LayoutDashboard size={15} /> Tableau de bord
         </div>
+        <div className={`eq-tab ${tab === "rapport" ? "active" : ""}`} onClick={() => setTab("rapport")}>
+          <FileText size={15} /> Rapport
+        </div>
       </div>
 
       <div style={{ padding: 22 }}>
@@ -490,6 +495,7 @@ export default function EQissmiSuivi({ user, onLogout }) {
           />
         )}
         {tab === "dashboard" && <DashboardTab stats={stats} entries={entries} />}
+        {tab === "rapport" && <ReportTab sessions={sessions} modules={modules} entries={entries} />}
       </div>
     </div>
   );
@@ -538,6 +544,17 @@ function ConfigTab({ sessions, modules, addSession, addModule, deleteSession, de
 
 /* ============================================================= SAISIE ============================================================= */
 const DIRECTIONS = ["Marrakech", "Safi", "Rhamna", "Chichaoua", "Kalaa des Sraghna", "Youssoufia", "Haouz", "Essaouira"];
+const DIRECTIONS_AR = {
+  "Marrakech": "مراكش",
+  "Safi": "آسفي",
+  "Rhamna": "الرحامنة",
+  "Chichaoua": "شيشاوة",
+  "Kalaa des Sraghna": "قلعة السراغنة",
+  "Youssoufia": "اليوسفية",
+  "Haouz": "الحوز",
+  "Essaouira": "الصويرة",
+  "Non renseigné": "غير محدد",
+};
 
 function emptyRow() {
   return { key: Math.random().toString(36).slice(2), name: "", username: "", province: "" };
@@ -1102,6 +1119,396 @@ function DashboardTab({ stats, entries }) {
         </div>
         );
       })}
+    </div>
+  );
+}
+
+/* ============================================================= RAPPORT ============================================================= */
+function computeReportStats(entries, sessionId, moduleId) {
+  // Inscrits = bénéficiaires distincts dans la session (tous modules confondus), regroupés par direction
+  const seenKeyToProvince = new Map();
+  entries.forEach((e) => {
+    if (e.sessionId !== sessionId) return;
+    const key = e.username && e.username.trim() ? "u:" + e.username.trim().toLowerCase() : "n:" + (e.beneficiary || "").trim().toLowerCase();
+    if (!seenKeyToProvince.has(key)) {
+      seenKeyToProvince.set(key, e.province && e.province.trim() ? e.province.trim() : "Non renseigné");
+    }
+  });
+  const registeredByProvince = {};
+  seenKeyToProvince.forEach((province) => {
+    registeredByProvince[province] = (registeredByProvince[province] || 0) + 1;
+  });
+
+  // Ont satisfait = pour le module choisi précisément, par direction
+  const completedByProvince = {};
+  entries.forEach((e) => {
+    if (e.sessionId !== sessionId || e.moduleId !== moduleId || !e.satisfied) return;
+    const province = e.province && e.province.trim() ? e.province.trim() : "Non renseigné";
+    completedByProvince[province] = (completedByProvince[province] || 0) + 1;
+  });
+
+  const provinces = [...DIRECTIONS, "Non renseigné"].filter((p) => registeredByProvince[p] || completedByProvince[p]);
+  const rows = provinces.map((p) => {
+    const registered = registeredByProvince[p] || 0;
+    const completed = completedByProvince[p] || 0;
+    const pct = registered > 0 ? Math.round((completed / registered) * 1000) / 10 : null;
+    return { province: p, registered, completed, pct };
+  });
+
+  const totalRegistered = rows.reduce((a, r) => a + r.registered, 0);
+  const totalCompleted = rows.reduce((a, r) => a + r.completed, 0);
+  const globalPct = totalRegistered > 0 ? Math.round((totalCompleted / totalRegistered) * 1000) / 10 : null;
+
+  // Équipe régionale = tuteurs distincts de la session, par direction
+  const teamMap = new Map();
+  entries.forEach((e) => {
+    if (e.sessionId !== sessionId) return;
+    const tutor = (e.tutor || "").trim();
+    if (!tutor) return;
+    const province = e.province && e.province.trim() ? e.province.trim() : "Non renseigné";
+    teamMap.set(province + "|||" + tutor.toLowerCase(), { province, tutor });
+  });
+  const team = [...teamMap.values()].sort((a, b) => a.province.localeCompare(b.province) || a.tutor.localeCompare(b.tutor));
+
+  return { rows, totalRegistered, totalCompleted, globalPct, team };
+}
+
+function defaultSummary(sessionName, moduleName, stats) {
+  return `Dans le cadre du suivi de la session "${sessionName}", un total de ${stats.totalRegistered} bénéficiaire(s) a été enregistré, réparti(s) sur ${stats.rows.length} direction(s) provinciale(s). Concernant le module "${moduleName}", ${stats.totalCompleted} bénéficiaire(s) ont satisfait aux exigences, soit un taux de réussite global de ${stats.globalPct !== null ? stats.globalPct + "%" : "non disponible"}. Ce suivi a été assuré par ${stats.team.length} tuteur(s) mobilisé(s) au niveau régional.`;
+}
+
+function defaultConclusion(sessionName, moduleName) {
+  return `Les résultats obtenus pour le module "${moduleName}" de la session "${sessionName}" témoignent d'une dynamique positive dans l'accompagnement des bénéficiaires. Il convient de poursuivre les efforts d'encadrement technique et pédagogique afin de consolider ces acquis et d'améliorer davantage le taux de satisfaction dans les prochaines étapes de la formation.`;
+}
+
+function defaultSummaryAr(sessionName, moduleName, stats) {
+  return `في إطار تتبع سير الدورة التكوينية "${sessionName}"، تم تسجيل ما مجموعه ${stats.totalRegistered} مستفيدا موزعين على ${stats.rows.length} مديرية إقليمية. أما بخصوص الوحدة "${moduleName}"، فقد تمكن ${stats.totalCompleted} مستفيدا من إنجازها، أي بنسبة إنجاز إجمالية بلغت ${stats.globalPct !== null ? stats.globalPct + "%" : "غير متوفرة"}. وقد تم تأطير هذا المسار من طرف ${stats.team.length} ميسرا على المستوى الجهوي.`;
+}
+
+function defaultConclusionAr(sessionName, moduleName) {
+  return `تعكس النتائج المحصل عليها بخصوص الوحدة "${moduleName}" من الدورة "${sessionName}" دينامية إيجابية في مواكبة المستفيدين والمستفيدات. وتجدر الإشارة إلى ضرورة الاستمرار في تعزيز التأطير التقني والبيداغوجي من أجل ترسيخ هذه المكتسبات والرفع من نسب الإنجاز في المراحل المقبلة من التكوين.`;
+}
+
+async function generateReportDocxArabic({ orgLine1, orgLine2, title, sessionName, moduleName, preparedBy, coordinatedWith, summary, conclusion, stats }) {
+  const P = (text, opts = {}) =>
+    new Paragraph({
+      bidirectional: true,
+      alignment: opts.alignment || AlignmentType.RIGHT,
+      heading: opts.heading,
+      spacing: opts.spacing,
+      children: [new TextRun({ text: String(text), bold: !!opts.bold, rightToLeft: true, font: "Arial" })],
+    });
+
+  const cellText = (text, opts = {}) =>
+    new TableCell({
+      children: [P(text, { bold: opts.bold })],
+      width: { size: opts.width || 25, type: WidthType.PERCENTAGE },
+    });
+
+  const provName = (p) => DIRECTIONS_AR[p] || p;
+
+  const registrationTable = new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: [
+      new TableRow({ children: [cellText("المديرية الإقليمية", { bold: true }), cellText("عدد المسجلين", { bold: true }), cellText("عدد من أنجزوا الوحدة", { bold: true }), cellText("نسبة الإنجاز", { bold: true })] }),
+      ...stats.rows.map((r) => new TableRow({ children: [cellText(provName(r.province)), cellText(r.registered), cellText(r.completed), cellText(r.pct === null ? "—" : r.pct + "%")] })),
+      new TableRow({ children: [cellText("المجموع", { bold: true }), cellText(stats.totalRegistered, { bold: true }), cellText(stats.totalCompleted, { bold: true }), cellText(stats.globalPct === null ? "—" : stats.globalPct + "%", { bold: true })] }),
+    ],
+  });
+
+  const teamTable = new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: [
+      new TableRow({ children: [cellText("المديرية الإقليمية", { bold: true }), cellText("الميسر", { bold: true })] }),
+      ...(stats.team.length > 0
+        ? stats.team.map((t) => new TableRow({ children: [cellText(provName(t.province)), cellText(t.tutor)] }))
+        : [new TableRow({ children: [cellText("—"), cellText("لا يوجد ميسر مسجل")] })]),
+    ],
+  });
+
+  const doc = new Document({
+    sections: [
+      {
+        children: [
+          P(orgLine1),
+          P(orgLine2, { spacing: { after: 300 } }),
+          P(title, { heading: HeadingLevel.TITLE }),
+          P(`الدورة : ${sessionName}`),
+          P(`الوحدة : ${moduleName}`, { spacing: { after: 300 } }),
+          P(`من إنجاز : ${preparedBy || "—"}`),
+          P(`بتنسيق مع : ${coordinatedWith || "—"}`, { spacing: { after: 400 } }),
+
+          P("ملخص عام", { heading: HeadingLevel.HEADING_1 }),
+          P(summary, { spacing: { after: 300 } }),
+
+          P("عدد المستفيدين حسب المديرية الإقليمية", { heading: HeadingLevel.HEADING_1, spacing: { before: 200 } }),
+          registrationTable,
+
+          P("الفريق الجهوي المكلف بالتأطير", { heading: HeadingLevel.HEADING_1, spacing: { before: 300 } }),
+          teamTable,
+
+          P("خلاصة عامة", { heading: HeadingLevel.HEADING_1, spacing: { before: 300 } }),
+          P(conclusion),
+        ],
+      },
+    ],
+  });
+
+  const blob = await Packer.toBlob(doc);
+  const safeName = `Rapport_AR_${sessionName}_${moduleName}`.replace(/[^a-zA-Z0-9_\-]+/g, "_");
+  saveAs(blob, `${safeName}.docx`);
+}
+
+async function generateReportDocx({ orgLine1, orgLine2, title, sessionName, moduleName, preparedBy, coordinatedWith, summary, conclusion, stats }) {
+  const cellText = (text, opts = {}) =>
+    new TableCell({
+      children: [new Paragraph({ children: [new TextRun({ text: String(text), bold: !!opts.bold })] })],
+      width: { size: opts.width || 25, type: WidthType.PERCENTAGE },
+    });
+
+  const registrationTable = new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: [
+      new TableRow({ children: [cellText("Direction provinciale", { bold: true }), cellText("Inscrits", { bold: true }), cellText("Ont satisfait le module", { bold: true }), cellText("% de réussite", { bold: true })] }),
+      ...stats.rows.map((r) => new TableRow({ children: [cellText(r.province), cellText(r.registered), cellText(r.completed), cellText(r.pct === null ? "—" : r.pct + "%")] })),
+      new TableRow({ children: [cellText("Total", { bold: true }), cellText(stats.totalRegistered, { bold: true }), cellText(stats.totalCompleted, { bold: true }), cellText(stats.globalPct === null ? "—" : stats.globalPct + "%", { bold: true })] }),
+    ],
+  });
+
+  const teamTable = new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: [
+      new TableRow({ children: [cellText("Direction provinciale", { bold: true }), cellText("Tuteur", { bold: true })] }),
+      ...(stats.team.length > 0
+        ? stats.team.map((t) => new TableRow({ children: [cellText(t.province), cellText(t.tutor)] }))
+        : [new TableRow({ children: [cellText("—"), cellText("Aucun tuteur renseigné")] })]),
+    ],
+  });
+
+  const doc = new Document({
+    sections: [
+      {
+        children: [
+          new Paragraph({ text: orgLine1, alignment: AlignmentType.CENTER }),
+          new Paragraph({ text: orgLine2, alignment: AlignmentType.CENTER, spacing: { after: 300 } }),
+          new Paragraph({ text: title, heading: HeadingLevel.TITLE, alignment: AlignmentType.CENTER }),
+          new Paragraph({ text: `Session : ${sessionName}`, alignment: AlignmentType.CENTER }),
+          new Paragraph({ text: `Module : ${moduleName}`, alignment: AlignmentType.CENTER, spacing: { after: 300 } }),
+          new Paragraph({ children: [new TextRun({ text: "Réalisé par : ", bold: true }), new TextRun(preparedBy || "—")] }),
+          new Paragraph({ children: [new TextRun({ text: "En coordination avec : ", bold: true }), new TextRun(coordinatedWith || "—")], spacing: { after: 400 } }),
+
+          new Paragraph({ text: "Résumé général", heading: HeadingLevel.HEADING_1 }),
+          new Paragraph({ text: summary, spacing: { after: 300 } }),
+
+          new Paragraph({ text: "Bénéficiaires par direction provinciale", heading: HeadingLevel.HEADING_1, spacing: { before: 200 } }),
+          registrationTable,
+
+          new Paragraph({ text: "Équipe régionale encadrante", heading: HeadingLevel.HEADING_1, spacing: { before: 300 } }),
+          teamTable,
+
+          new Paragraph({ text: "Conclusion générale", heading: HeadingLevel.HEADING_1, spacing: { before: 300 } }),
+          new Paragraph({ text: conclusion }),
+        ],
+      },
+    ],
+  });
+
+  const blob = await Packer.toBlob(doc);
+  const safeName = `Rapport_${sessionName}_${moduleName}`.replace(/[^a-zA-Z0-9_\-]+/g, "_");
+  saveAs(blob, `${safeName}.docx`);
+}
+
+function ReportTab({ sessions, modules, entries }) {
+  const [sessionId, setSessionId] = useState("");
+  const [moduleId, setModuleId] = useState("");
+  const [orgLine1, setOrgLine1] = useState("Direction des Ressources Pédagogiques et Numériques");
+  const [orgLine2, setOrgLine2] = useState("Service de l'Apprentissage et de l'Enseignement à Distance");
+  const [title, setTitle] = useState("Rapport de suivi de la session de formation e-Qissmi");
+  const [preparedBy, setPreparedBy] = useState("");
+  const [coordinatedWith, setCoordinatedWith] = useState("");
+  const [summary, setSummary] = useState("");
+  const [conclusion, setConclusion] = useState("");
+  const [generating, setGenerating] = useState(false);
+
+  const [orgLine1Ar, setOrgLine1Ar] = useState("مديرية الموارد البيداغوجية والرقمية");
+  const [orgLine2Ar, setOrgLine2Ar] = useState("مصلحة التعلم والتكوين عن بعد");
+  const [titleAr, setTitleAr] = useState("تقرير حول سير الدورة التكوينية إ-قسمي");
+  const [summaryAr, setSummaryAr] = useState("");
+  const [conclusionAr, setConclusionAr] = useState("");
+  const [generatingAr, setGeneratingAr] = useState(false);
+
+  const sessionName = sessions.find((s) => s.id === sessionId)?.name || "";
+  const moduleName = modules.find((m) => m.id === moduleId)?.name || "";
+
+  const stats = useMemo(() => {
+    if (!sessionId || !moduleId) return null;
+    return computeReportStats(entries, sessionId, moduleId);
+  }, [entries, sessionId, moduleId]);
+
+  const fillDefaults = () => {
+    if (!stats) return;
+    setSummary(defaultSummary(sessionName, moduleName, stats));
+    setConclusion(defaultConclusion(sessionName, moduleName));
+  };
+
+  const fillDefaultsAr = () => {
+    if (!stats) return;
+    setSummaryAr(defaultSummaryAr(sessionName, moduleName, stats));
+    setConclusionAr(defaultConclusionAr(sessionName, moduleName));
+  };
+
+  const handleGenerate = async () => {
+    if (!stats) return;
+    setGenerating(true);
+    try {
+      await generateReportDocx({
+        orgLine1, orgLine2, title, sessionName, moduleName, preparedBy, coordinatedWith,
+        summary: summary || defaultSummary(sessionName, moduleName, stats),
+        conclusion: conclusion || defaultConclusion(sessionName, moduleName),
+        stats,
+      });
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleGenerateAr = async () => {
+    if (!stats) return;
+    setGeneratingAr(true);
+    try {
+      await generateReportDocxArabic({
+        orgLine1: orgLine1Ar, orgLine2: orgLine2Ar, title: titleAr, sessionName, moduleName, preparedBy, coordinatedWith,
+        summary: summaryAr || defaultSummaryAr(sessionName, moduleName, stats),
+        conclusion: conclusionAr || defaultConclusionAr(sessionName, moduleName),
+        stats,
+      });
+    } finally {
+      setGeneratingAr(false);
+    }
+  };
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+        <div className="eq-card">
+          <h3 style={{ margin: "0 0 4px", fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 16 }}>Session et module concernés</h3>
+          <p style={{ margin: "0 0 14px", fontSize: 12.5, color: C.inkSoft }}>Le rapport est généré pour une session et un module précis.</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <select className="eq-input" value={sessionId} onChange={(e) => setSessionId(e.target.value)}>
+              <option value="">Session…</option>
+              {sessions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            <select className="eq-input" value={moduleId} onChange={(e) => setModuleId(e.target.value)}>
+              <option value="">Module…</option>
+              {modules.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="eq-card">
+          <h3 style={{ margin: "0 0 4px", fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 16 }}>En-tête du rapport</h3>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
+            <input className="eq-input" placeholder="Ligne d'en-tête 1 (direction)" value={orgLine1} onChange={(e) => setOrgLine1(e.target.value)} />
+            <input className="eq-input" placeholder="Ligne d'en-tête 2 (service)" value={orgLine2} onChange={(e) => setOrgLine2(e.target.value)} />
+            <input className="eq-input" placeholder="Titre du rapport" value={title} onChange={(e) => setTitle(e.target.value)} />
+            <input className="eq-input" placeholder="Réalisé par" value={preparedBy} onChange={(e) => setPreparedBy(e.target.value)} />
+            <input className="eq-input" placeholder="En coordination avec" value={coordinatedWith} onChange={(e) => setCoordinatedWith(e.target.value)} />
+          </div>
+        </div>
+
+        <div className="eq-card">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+            <h3 style={{ margin: 0, fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 16 }}>Texte du rapport</h3>
+            <button className="eq-btn eq-btn-secondary" disabled={!stats} onClick={fillDefaults}>
+              <RefreshCw size={13} /> Générer un texte automatique
+            </button>
+          </div>
+          <p style={{ margin: "0 0 10px", fontSize: 12.5, color: C.inkSoft }}>Modifiable librement avant de générer le document.</p>
+          <label style={{ fontSize: 12.5, color: C.inkSoft, display: "block", marginBottom: 4 }}>Résumé général</label>
+          <textarea className="eq-input" rows={5} value={summary} onChange={(e) => setSummary(e.target.value)} style={{ marginBottom: 10 }} />
+          <label style={{ fontSize: 12.5, color: C.inkSoft, display: "block", marginBottom: 4 }}>Conclusion générale</label>
+          <textarea className="eq-input" rows={4} value={conclusion} onChange={(e) => setConclusion(e.target.value)} />
+        </div>
+
+        <button className="eq-btn eq-btn-primary" disabled={!stats || generating} onClick={handleGenerate} style={{ justifyContent: "center", padding: "12px 14px" }}>
+          <FileText size={15} /> {generating ? "Génération…" : "Générer le rapport français (.docx)"}
+        </button>
+
+        <div className="eq-card">
+          <h3 style={{ margin: "0 0 4px", fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 16 }}>النسخة العربية</h3>
+          <p style={{ margin: "0 0 14px", fontSize: 12.5, color: C.inkSoft }}>نفس المعطيات، بصيغة عربية مستقلة</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <input className="eq-input" style={{ textAlign: "right", direction: "rtl" }} placeholder="السطر الأول" value={orgLine1Ar} onChange={(e) => setOrgLine1Ar(e.target.value)} />
+            <input className="eq-input" style={{ textAlign: "right", direction: "rtl" }} placeholder="السطر الثاني" value={orgLine2Ar} onChange={(e) => setOrgLine2Ar(e.target.value)} />
+            <input className="eq-input" style={{ textAlign: "right", direction: "rtl" }} placeholder="عنوان التقرير" value={titleAr} onChange={(e) => setTitleAr(e.target.value)} />
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "14px 0 4px" }}>
+            <label style={{ fontSize: 12.5, color: C.inkSoft }}>ملخص عام</label>
+            <button className="eq-btn eq-btn-secondary" disabled={!stats} onClick={fillDefaultsAr}>
+              <RefreshCw size={13} /> توليد نص تلقائي
+            </button>
+          </div>
+          <textarea className="eq-input" style={{ textAlign: "right", direction: "rtl" }} rows={5} value={summaryAr} onChange={(e) => setSummaryAr(e.target.value)} />
+          <label style={{ fontSize: 12.5, color: C.inkSoft, display: "block", margin: "10px 0 4px" }}>خلاصة عامة</label>
+          <textarea className="eq-input" style={{ textAlign: "right", direction: "rtl" }} rows={4} value={conclusionAr} onChange={(e) => setConclusionAr(e.target.value)} />
+        </div>
+
+        <button className="eq-btn eq-btn-primary" disabled={!stats || generatingAr} onClick={handleGenerateAr} style={{ justifyContent: "center", padding: "12px 14px" }}>
+          <FileText size={15} /> {generatingAr ? "جاري الإنشاء…" : "توليد التقرير بالعربية (.docx)"}
+        </button>
+
+        {!stats && (
+          <div style={{ fontSize: 12, color: C.clay, display: "flex", gap: 6 }}>
+            <AlertCircle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+            Choisissez une session et un module pour activer la génération.
+          </div>
+        )}
+      </div>
+
+      <div className="eq-card">
+        <h3 style={{ margin: "0 0 10px", fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 16 }}>Aperçu des données calculées</h3>
+        {!stats ? (
+          <div style={{ color: C.inkSoft, fontSize: 13 }}>Sélectionnez une session et un module pour voir l'aperçu.</div>
+        ) : (
+          <>
+            <table className="eq-table" style={{ marginBottom: 16 }}>
+              <thead>
+                <tr><th>Direction</th><th>Inscrits</th><th>Ont satisfait</th><th>%</th></tr>
+              </thead>
+              <tbody>
+                {stats.rows.map((r) => (
+                  <tr key={r.province}>
+                    <td>{r.province}</td>
+                    <td>{r.registered}</td>
+                    <td>{r.completed}</td>
+                    <td>{r.pct === null ? "—" : `${r.pct}%`}</td>
+                  </tr>
+                ))}
+                <tr style={{ fontWeight: 700 }}>
+                  <td>Total</td>
+                  <td>{stats.totalRegistered}</td>
+                  <td>{stats.totalCompleted}</td>
+                  <td>{stats.globalPct === null ? "—" : `${stats.globalPct}%`}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div style={{ fontSize: 12.5, color: C.inkSoft, marginBottom: 6 }}>{stats.team.length} tuteur(s) identifié(s) pour cette session</div>
+            <table className="eq-table">
+              <thead>
+                <tr><th>Direction</th><th>Tuteur</th></tr>
+              </thead>
+              <tbody>
+                {stats.team.map((t) => (
+                  <tr key={t.province + t.tutor}>
+                    <td>{t.province}</td>
+                    <td>{t.tutor}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+      </div>
     </div>
   );
 }
