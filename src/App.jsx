@@ -3,7 +3,7 @@ import * as XLSX from "xlsx";
 import {
   Plus, Trash2, Upload, Download, ChevronDown, ChevronRight,
   Users, CheckCircle2, Layers, FileSpreadsheet, Settings2,
-  ClipboardList, LayoutDashboard, AlertCircle, Loader2, FileText, RefreshCw
+  ClipboardList, LayoutDashboard, AlertCircle, Loader2, FileText, RefreshCw, Copy
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -13,6 +13,7 @@ import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, Ta
 import { saveAs } from "file-saver";
 import { api } from "./api";
 import logoAref from "./assets/logo-aref.png";
+
 
 /* ---------- Palette (inspiration zellige : teal profond, terre cuite, sable) ---------- */
 const C = {
@@ -179,6 +180,24 @@ export default function EQissmiSuivi({ user, onLogout }) {
       await refresh({ silent: true });
     }
   };
+
+  /* ---------- Supprimer toutes les entrées d'un username, dans une session précise ou dans toutes ---------- */
+  const deleteEntriesByUsername = async (username, sessionId) => {
+    const key = username.trim().toLowerCase();
+    const toDelete = entries.filter(
+      (e) => (e.username || "").trim().toLowerCase() === key && (!sessionId || e.sessionId === sessionId)
+    );
+    if (toDelete.length === 0) return { deleted: 0 };
+    const idsToDelete = new Set(toDelete.map((e) => e.id));
+    setEntries((prev) => prev.filter((e) => !idsToDelete.has(e.id))); // retrait optimiste
+    try {
+      await Promise.all(toDelete.map((e) => api.deleteEntry(e.id)));
+    } catch (err) {
+      setSyncState("error");
+    }
+    await refresh({ silent: true });
+    return { deleted: toDelete.length };
+  };
   const toggleSatisfied = async (id) => {
     const current = entries.find((e) => e.id === id);
     if (!current) return;
@@ -204,16 +223,17 @@ export default function EQissmiSuivi({ user, onLogout }) {
     }
   };
 
-  /* ---------- Marquer "satisfait" pour des bénéficiaires déjà saisis, via une liste d'usernames ---------- */
-  const markSatisfiedByUsernames = async (usernamesText) => {
+  /* ---------- Marquer "satisfait" pour des bénéficiaires déjà saisis, via une liste d'usernames (scopé à une session) ---------- */
+  const markSatisfiedByUsernames = async (usernamesText, sessionId) => {
     const wanted = usernamesText
       .split("\n")
       .map((u) => u.trim().toLowerCase())
       .filter(Boolean);
     const wantedSet = new Set(wanted);
-    if (wantedSet.size === 0) return { updated: 0, alreadySatisfied: 0, notFound: [] };
+    if (wantedSet.size === 0 || !sessionId) return { updated: 0, alreadySatisfied: 0, notFound: [] };
 
-    const matches = entries.filter((e) => e.username && wantedSet.has(e.username.trim().toLowerCase()));
+    const scoped = entries.filter((e) => e.sessionId === sessionId);
+    const matches = scoped.filter((e) => e.username && wantedSet.has(e.username.trim().toLowerCase()));
     const toUpdate = matches.filter((e) => !e.satisfied);
     const alreadySatisfied = matches.length - toUpdate.length;
     const foundUsernames = new Set(matches.map((e) => e.username.trim().toLowerCase()));
@@ -469,6 +489,9 @@ export default function EQissmiSuivi({ user, onLogout }) {
         <div className={`eq-tab ${tab === "saisie" ? "active" : ""}`} onClick={() => setTab("saisie")}>
           <ClipboardList size={15} /> Saisie
         </div>
+        <div className={`eq-tab ${tab === "doublons" ? "active" : ""}`} onClick={() => setTab("doublons")}>
+          <Copy size={15} /> Doublons
+        </div>
         <div className={`eq-tab ${tab === "import" ? "active" : ""}`} onClick={() => setTab("import")}>
           <FileSpreadsheet size={15} /> Import / Export
         </div>
@@ -483,6 +506,7 @@ export default function EQissmiSuivi({ user, onLogout }) {
       <div style={{ padding: 22 }}>
         {tab === "config" && <ConfigTab sessions={sessions} modules={modules} addSession={addSession} addModule={addModule} deleteSession={deleteSession} deleteModule={deleteModule} />}
         {tab === "saisie" && <SaisieTab sessions={sessions} modules={modules} entries={entries} addEntry={addEntry} deleteEntry={deleteEntry} toggleSatisfied={toggleSatisfied} updateEntryProvince={updateEntryProvince} markSatisfiedByUsernames={markSatisfiedByUsernames} />}
+        {tab === "doublons" && <DoublonsTab sessions={sessions} modules={modules} entries={entries} deleteEntriesByUsername={deleteEntriesByUsername} />}
         {tab === "import" && (
           <ImportTab
             fileInputRef={fileInputRef}
@@ -571,18 +595,20 @@ function SaisieTab({ sessions, modules, entries, addEntry, deleteEntry, toggleSa
   const [filterDirection, setFilterDirection] = useState("");
   const [searchText, setSearchText] = useState("");
 
+  const [updateSessionId, setUpdateSessionId] = useState("");
   const [updateUsernamesText, setUpdateUsernamesText] = useState("");
   const [updateReport, setUpdateReport] = useState(null);
   const [updating, setUpdating] = useState(false);
 
   const submitUpdate = async () => {
-    if (!updateUsernamesText.trim()) return;
+    if (!updateUsernamesText.trim() || !updateSessionId) return;
     setUpdating(true);
-    const report = await markSatisfiedByUsernames(updateUsernamesText);
+    const report = await markSatisfiedByUsernames(updateUsernamesText, updateSessionId);
     setUpdateReport(report);
     setUpdating(false);
     setUpdateUsernamesText("");
   };
+
 
   const updateRow = (key, field, value) => {
     setRows((prev) => prev.map((r) => (r.key === key ? { ...r, [field]: value } : r)));
@@ -703,9 +729,13 @@ function SaisieTab({ sessions, modules, entries, addEntry, deleteEntry, toggleSa
           Mettre à jour un statut existant
         </h3>
         <p style={{ margin: "0 0 14px", fontSize: 12.5, color: C.inkSoft }}>
-          Pour des bénéficiaires déjà saisis : collez ici les usernames de ceux qui viennent de satisfaire le module.
-          Les autres restent inchangés.
+          Pour des bénéficiaires déjà saisis : choisissez la session concernée, puis collez les usernames de ceux qui
+          viennent de satisfaire le module. Les autres restent inchangés.
         </p>
+        <select className="eq-input" style={{ marginBottom: 10 }} value={updateSessionId} onChange={(e) => setUpdateSessionId(e.target.value)}>
+          <option value="">Session concernée…</option>
+          {sessions.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
         <textarea
           className="eq-input"
           rows={6}
@@ -716,18 +746,23 @@ function SaisieTab({ sessions, modules, entries, addEntry, deleteEntry, toggleSa
         <button
           className="eq-btn eq-btn-primary"
           onClick={submitUpdate}
-          disabled={updating}
+          disabled={updating || !updateSessionId || !updateUsernamesText.trim()}
           style={{ justifyContent: "center", width: "100%", marginTop: 10 }}
         >
           <CheckCircle2 size={14} /> {updating ? "Mise à jour…" : "Marquer comme satisfait"}
         </button>
+        {!updateSessionId && (
+          <div style={{ marginTop: 8, fontSize: 11.5, color: C.clay }}>
+            Choisissez d'abord une session — un même username peut exister dans plusieurs sessions.
+          </div>
+        )}
         {updateReport && (
           <div style={{ marginTop: 12, fontSize: 12.5, background: C.goodBg, color: C.good, borderRadius: 8, padding: 10 }}>
             {updateReport.updated} bénéficiaire(s) mis à jour
             {updateReport.alreadySatisfied > 0 && `, ${updateReport.alreadySatisfied} déjà marqué(s) satisfait`}
             {updateReport.notFound.length > 0 && (
               <div style={{ marginTop: 6, color: C.bad }}>
-                Username(s) introuvable(s) : {updateReport.notFound.join(", ")}
+                Username(s) introuvable(s) dans cette session : {updateReport.notFound.join(", ")}
               </div>
             )}
           </div>
@@ -1445,7 +1480,7 @@ function ReportTab({ sessions, modules, entries }) {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "14px 0 4px" }}>
             <label style={{ fontSize: 12.5, color: C.inkSoft }}>ملخص عام</label>
             <button className="eq-btn eq-btn-secondary" disabled={!stats} onClick={fillDefaultsAr}>
-              <RefreshCw size={13} /> استخراج نص تلقائي
+              <RefreshCw size={13} /> توليد نص تلقائي
             </button>
           </div>
           <textarea className="eq-input" style={{ textAlign: "right", direction: "rtl" }} rows={5} value={summaryAr} onChange={(e) => setSummaryAr(e.target.value)} />
@@ -1454,7 +1489,7 @@ function ReportTab({ sessions, modules, entries }) {
         </div>
 
         <button className="eq-btn eq-btn-primary" disabled={!stats || generatingAr} onClick={handleGenerateAr} style={{ justifyContent: "center", padding: "12px 14px" }}>
-          <FileText size={15} /> {generatingAr ? "جاري الإنشاء…" : "استخراج التقرير بالعربية (.docx)"}
+          <FileText size={15} /> {generatingAr ? "جاري الإنشاء…" : "توليد التقرير بالعربية (.docx)"}
         </button>
 
         {!stats && (
@@ -1509,6 +1544,147 @@ function ReportTab({ sessions, modules, entries }) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ============================================================= DOUBLONS ============================================================= */
+function DoublonsTab({ sessions, modules, entries, deleteEntriesByUsername }) {
+  const [actionReport, setActionReport] = useState(null);
+  const [busyKey, setBusyKey] = useState(null); // clé "username|||sessionId" ou "username|||ALL" en cours de suppression
+
+  const crossSessionUsernames = useMemo(() => {
+    const map = new Map(); // username en minuscules -> { original, sessionIds: Set }
+    entries.forEach((e) => {
+      const u = (e.username || "").trim();
+      if (!u) return;
+      const key = u.toLowerCase();
+      if (!map.has(key)) map.set(key, { original: u, sessionIds: new Set() });
+      map.get(key).sessionIds.add(e.sessionId);
+    });
+    const dups = [];
+    map.forEach((val) => {
+      if (val.sessionIds.size > 1) {
+        dups.push({
+          username: val.original,
+          sessions: [...val.sessionIds].map((id) => ({ id, name: sessions.find((s) => s.id === id)?.name || "—" })),
+        });
+      }
+    });
+    return dups.sort((a, b) => a.username.localeCompare(b.username));
+  }, [entries, sessions]);
+
+  const handleDelete = async (username, sessionId, busyKeySuffix) => {
+    const label = sessionId ? `de la session "${sessions.find((s) => s.id === sessionId)?.name}"` : "de TOUTES les sessions";
+    if (!window.confirm(`Supprimer toutes les entrées de "${username}" ${label} ? Cette action est irréversible.`)) return;
+    setBusyKey(username + "|||" + busyKeySuffix);
+    const result = await deleteEntriesByUsername(username, sessionId);
+    setBusyKey(null);
+    setActionReport(`${result.deleted} entrée(s) supprimée(s) pour "${username}" ${label}.`);
+  };
+
+  const sameSessionModuleDuplicates = useMemo(() => {
+    const map = new Map(); // sessionId|||moduleId|||username -> { ..., count }
+    entries.forEach((e) => {
+      const u = (e.username || "").trim();
+      if (!u) return;
+      const key = e.sessionId + "|||" + e.moduleId + "|||" + u.toLowerCase();
+      if (!map.has(key)) map.set(key, { sessionId: e.sessionId, moduleId: e.moduleId, username: u, count: 0 });
+      map.get(key).count += 1;
+    });
+    return [...map.values()]
+      .filter((v) => v.count > 1)
+      .map((v) => ({
+        ...v,
+        sessionName: sessions.find((s) => s.id === v.sessionId)?.name || "—",
+        moduleName: modules.find((m) => m.id === v.moduleId)?.name || "—",
+      }));
+  }, [entries, sessions, modules]);
+
+  return (
+    <div className="eq-card">
+      <h3 style={{ margin: "0 0 4px", fontFamily: "ui-serif, Georgia, serif", color: C.tealDark, fontSize: 16 }}>
+        Usernames présents dans plusieurs sessions
+      </h3>
+      <p style={{ margin: "0 0 12px", fontSize: 12.5, color: C.inkSoft }}>
+        Un même username peut légitimement apparaître dans plusieurs sessions (un bénéficiaire qui progresse d'une session à l'autre).
+        Cette liste sert à vérifier qu'il n'y a pas d'erreur de saisie.
+      </p>
+      {actionReport && (
+        <div style={{ marginBottom: 12, fontSize: 12.5, background: C.goodBg, color: C.good, borderRadius: 8, padding: 10 }}>
+          {actionReport}
+        </div>
+      )}
+      {crossSessionUsernames.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: C.inkSoft }}>Aucun username partagé entre plusieurs sessions pour le moment.</div>
+      ) : (
+        <table className="eq-table">
+          <thead>
+            <tr><th>Username</th><th>Sessions concernées</th><th>Actions</th></tr>
+          </thead>
+          <tbody>
+            {crossSessionUsernames.map((d) => (
+              <tr key={d.username}>
+                <td>{d.username}</td>
+                <td>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {d.sessions.map((s) => (
+                      <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span>{s.name}</span>
+                        <button
+                          className="eq-btn eq-btn-ghost"
+                          style={{ padding: "2px 6px", fontSize: 11 }}
+                          disabled={busyKey === d.username + "|||" + s.id}
+                          onClick={() => handleDelete(d.username, s.id, s.id)}
+                          title={`Supprimer de la session ${s.name}`}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </td>
+                <td>
+                  <button
+                    className="eq-btn eq-btn-danger"
+                    style={{ fontSize: 12 }}
+                    disabled={busyKey === d.username + "|||ALL"}
+                    onClick={() => handleDelete(d.username, null, "ALL")}
+                  >
+                    <Trash2 size={13} /> Supprimer partout
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {sameSessionModuleDuplicates.length > 0 && (
+        <>
+          <h4 style={{ margin: "18px 0 6px", fontSize: 13.5, color: C.bad }}>
+            ⚠ Doublons à corriger (même session, même module, même username)
+          </h4>
+          <p style={{ margin: "0 0 10px", fontSize: 12, color: C.inkSoft }}>
+            Ceci indique une erreur de saisie probable — deux lignes identiques pour le même bénéficiaire, dans le même module.
+          </p>
+          <table className="eq-table">
+            <thead>
+              <tr><th>Username</th><th>Session</th><th>Module</th><th>Occurrences</th></tr>
+            </thead>
+            <tbody>
+              {sameSessionModuleDuplicates.map((d, i) => (
+                <tr key={i}>
+                  <td>{d.username}</td>
+                  <td>{d.sessionName}</td>
+                  <td>{d.moduleName}</td>
+                  <td style={{ color: C.bad, fontWeight: 700 }}>{d.count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
     </div>
   );
 }
